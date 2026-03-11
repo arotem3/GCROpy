@@ -1,6 +1,5 @@
 import numpy as np
-from numpy.linalg import qr, norm
-from scipy.linalg import schur, qz, solve
+from scipy.linalg import solve, ordqz, qr, norm
 
 
 def compute_givens(x, y):
@@ -14,6 +13,70 @@ def apply_givens(x, y, c, s):
     x_new = c * x + s * y
     y_new = -s * x + c * y
     return x_new, y_new
+
+
+def invariant_subspace(A, B, k):
+    """Compute an invariant subspace of A with respect to B using the generalized Schur decomposition."""
+
+    def select(alpha, beta):
+        """Select eigenvalues based on magnitude, keeping conjugate pairs together."""
+        n = len(alpha)
+
+        # Use a relative threshold for generalized eigenvalues to avoid scale issues.
+        scale = np.max(np.abs(beta)) if n > 0 else 1.0
+        beta_tol = 1e-14 * max(1.0, scale)
+        eigs = [a / b if abs(b) > beta_tol else np.inf for a, b in zip(alpha, beta)]
+        blocks = []
+
+        tol = 1e-12
+
+        i = 0
+        while i < n:
+            mag = abs(eigs[i])
+            is_pair = (
+                i + 1 < n
+                and np.isfinite(eigs[i])
+                and np.isfinite(eigs[i + 1])
+                and abs(eigs[i].imag) > tol
+                and abs(eigs[i + 1].imag) > tol
+                and abs(eigs[i].real - eigs[i + 1].real) < tol
+                and abs(eigs[i].imag + eigs[i + 1].imag) < tol
+            )
+            if is_pair:
+                blocks.append((mag, i, 2))  # complex conjugate pair
+                i += 2
+            else:
+                blocks.append((mag, i, 1))  # real eigenvalue
+                i += 1
+
+        blocks.sort(key=lambda x: x[0])
+
+        count = 0
+        J = np.zeros(n, dtype=bool)
+        for _, idx, block_size in blocks:
+            if count >= k:
+                break
+
+            if block_size == 2:
+                # Keep conjugate pairs together; allow selecting k+1 only in this case.
+                if count + 2 <= k or count == k - 1:
+                    J[idx] = True
+                    J[idx + 1] = True
+                    count += 2
+            else:
+                J[idx] = True
+                count += 1
+
+        return J
+
+    result = ordqz(A, B, sort=select, output="real")
+    alpha, beta = result[2], result[3]
+    selected_count = int(np.count_nonzero(select(alpha, beta)))
+    assert (
+        selected_count <= k + 1
+    ), "Selected more eigenvalues than requested, this should not happen"
+
+    return result[-1][:, :selected_count]
 
 
 class gcro:
@@ -158,129 +221,11 @@ class gcro:
 
         return x, W, Z, H, m_actual, res_hist
 
-    def _fresh_ritz(self, H, k):
-        m = H.shape[1]
-        Hm = H[:m, :m]
-        em = np.zeros(m, dtype=np.float64)
-        em[-1] = 1.0
-        hm = solve(Hm.T, em)
-        Hm = Hm + H[m, m - 1] ** 2 * np.outer(hm, em)
-        schur_result = schur(Hm, output="real")
-        T, Z = schur_result[0], schur_result[1]
-
-        # Extract eigenvalues from real Schur form (diagonal/2x2 blocks)
-        evals = self._extract_real_evals(T)
-        idx = np.argsort(np.abs(evals))[: k + 1]
-        evecs = self._extract_real_evecs(Z, T, idx)
-
-        return evecs
-
     def _compute_ritz_invariant_space(self, H, W, Z, k):
         A = H.T @ H
         B = H.T @ (W.T @ Z)
 
-        # Generalized Schur form
-        result = qz(A, B, output="real")
-        S, T, Z = result[0], result[1], result[2]
-
-        # Extract generalized eigenvalues
-        evals = self._extract_generalized_evals(S, T)
-        idx = np.argsort(np.abs(evals))[: k + 1]
-        evecs = self._extract_real_evecs(Z, S, idx)
-
-        return evecs
-
-    def _extract_real_evals(self, T):
-        """Extract eigenvalues from real Schur form."""
-        evals = []
-        i = 0
-        while i < T.shape[0]:
-            if i + 1 < T.shape[0] and abs(T[i + 1, i]) > 1e-14:
-                # 2x2 block: complex conjugate pair
-                trace = T[i, i] + T[i + 1, i + 1]
-                det = T[i, i] * T[i + 1, i + 1] - T[i, i + 1] * T[i + 1, i]
-                lam_real = trace / 2.0
-                lam_imag = np.sqrt(det - (trace / 2.0) ** 2)
-                lam = np.sqrt(lam_real**2 + lam_imag**2)
-                evals.append(lam)
-                evals.append(lam)
-                i += 2
-            else:
-                # 1x1 block: real eigenvalue
-                evals.append(abs(T[i, i]))
-                i += 1
-        return np.array(evals)
-
-    def _extract_generalized_evals(self, S, T):
-        """Extract generalized eigenvalues from real generalized Schur form."""
-        evals = []
-        i = 0
-        while i < S.shape[0]:
-            if i + 1 < S.shape[0] and abs(S[i + 1, i]) > 1e-14:
-                # 2x2 complex pair
-                s_trace = S[i, i] + S[i + 1, i + 1]
-                t_trace = T[i, i] + T[i + 1, i + 1]
-                eps = 1e-14
-                if abs(t_trace) > eps:
-                    lam = abs(s_trace / t_trace)
-                else:
-                    lam = abs(s_trace)
-                evals.append(lam)
-                evals.append(lam)
-                i += 2
-            else:
-                # 1x1 real eigenvalue
-                eps = 1e-14
-                if abs(T[i, i]) > eps:
-                    lam = abs(S[i, i] / T[i, i])
-                else:
-                    lam = abs(S[i, i])
-                evals.append(lam)
-                i += 1
-        return np.array(evals)
-
-    def _extract_real_evecs(self, Z, T, idx):
-        """Extract real eigenvectors from real Schur form."""
-        # Ensure complex conjugate pairs are not split
-        idx_list = list(idx)
-        i = 0
-        block_idx = 0
-        while i < T.shape[0]:
-            if i + 1 < T.shape[0] and abs(T[i + 1, i]) > 1e-14:
-                # Complex pair: if either index is selected, select both
-                if block_idx in idx_list or block_idx + 1 in idx_list:
-                    if block_idx not in idx_list:
-                        idx_list.append(block_idx)
-                    if block_idx + 1 not in idx_list:
-                        idx_list.append(block_idx + 1)
-                block_idx += 2
-                i += 2
-            else:
-                block_idx += 1
-                i += 1
-
-        # Now extract with complete pairs
-        evecs = []
-        for j in sorted(idx_list):
-            i = 0
-            block_idx = 0
-            while i < T.shape[0]:
-                if i + 1 < T.shape[0] and abs(T[i + 1, i]) > 1e-14:
-                    if block_idx == j or block_idx + 1 == j:
-                        if block_idx == j:
-                            evecs.append(Z[:, i])
-                        else:
-                            evecs.append(Z[:, i + 1])
-                        break
-                    block_idx += 2
-                    i += 2
-                else:
-                    if block_idx == j:
-                        evecs.append(Z[:, i])
-                        break
-                    block_idx += 1
-                    i += 1
-        return np.column_stack(evecs) if evecs else np.zeros((Z.shape[0], 0))
+        return invariant_subspace(A, B, k)
 
     def solve(self, b, x0=None, tol=1e-6, maxiter=1000):
         x = x0.copy() if x0 is not None else np.zeros(self.n, dtype=np.float64)
@@ -321,7 +266,7 @@ class gcro:
 
             if self.update_deflation_space:
                 P = self._compute_ritz_invariant_space(H, W, Z, self.edim)
-                Q, R = qr(H @ P, mode="reduced")
+                Q, R = qr(H @ P, mode="economic")
                 P = solve(
                     R,
                     P.T,

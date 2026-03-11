@@ -395,18 +395,137 @@ def main():
     ax4.grid(True, alpha=0.3)
 
     # Summary statistics
+    def compute_iteration_stats(values):
+        arr = np.asarray(values, dtype=float)
+        q0, q25, q50, q75, q100 = np.quantile(arr, [0.0, 0.25, 0.5, 0.75, 1.0])
+        return {"min": q0, "q25": q25, "med": q50, "q75": q75, "max": q100}
+
+    def fmt_iter(v):
+        return f"{int(round(v))}"
+
+    def make_boxplot_bar(stats, global_min, global_max, width):
+        width = max(12, int(width))
+
+        if global_max == global_min:
+            chars = [" "] * (width + 1)
+            center = width // 2
+            chars[center] = "|"
+            return "".join(chars)
+
+        def pos(v):
+            return int(round((v - global_min) / (global_max - global_min) * width))
+
+        pmin = max(0, min(width, pos(stats["min"])))
+        pmax = max(0, min(width, pos(stats["max"])))
+        if pmax < pmin:
+            pmin, pmax = pmax, pmin
+
+        chars = [" "] * (width + 1)
+
+        # Draw only inside each solver's [min, max] span on a shared global canvas.
+        for i in range(pmin, pmax + 1):
+            chars[i] = "-"
+
+        if pmax == pmin:
+            chars[pmin] = "|"
+            return "".join(chars)
+
+        local_low = pmin + 1
+        local_high = pmax - 1
+
+        p25 = max(local_low, min(local_high, pos(stats["q25"])))
+        p50 = max(local_low, min(local_high, pos(stats["med"])))
+        p75 = max(local_low, min(local_high, pos(stats["q75"])))
+
+        if local_high - local_low >= 2:
+            # Enforce p25 < p50 < p75 to avoid marker overwrites.
+            p50 = max(p50, p25)
+            p75 = max(p75, p50)
+            if p50 <= p25:
+                p50 = p25 + 1
+            if p75 <= p50:
+                p75 = p50 + 1
+
+            if p75 > local_high:
+                shift = p75 - local_high
+                p25 -= shift
+                p50 -= shift
+                p75 -= shift
+            if p25 < local_low:
+                shift = local_low - p25
+                p25 += shift
+                p50 += shift
+                p75 += shift
+
+            p25 = min(local_high - 2, max(local_low, p25))
+            p50 = min(local_high - 1, max(p25 + 1, p50))
+            p75 = min(local_high, max(p50 + 1, p75))
+        elif local_high - local_low == 1:
+            p25 = local_low
+            p50 = local_low
+            p75 = local_high
+        else:
+            p25 = local_low
+            p50 = local_low
+            p75 = local_low
+
+        for i in range(p25, p75 + 1):
+            chars[i] = "="
+
+        chars[pmin] = "|"
+        chars[pmax] = "|"
+        chars[p25] = "["
+        chars[p75] = "]"
+        chars[p50] = "M"
+
+        return "".join(chars)
+
+    solver_stats = [
+        ("GCRO-DR", compute_iteration_stats(all_iterations)),
+        (
+            "GCRO-DR frozen",
+            compute_iteration_stats(all_iterations_frozen),
+        ),
+        (f"GMRES({kdim})", compute_iteration_stats(gmres_iterations)),
+    ]
+
+    all_iter_values = np.concatenate(
+        [
+            np.asarray(all_iterations, dtype=float),
+            np.asarray(all_iterations_frozen, dtype=float),
+            np.asarray(gmres_iterations, dtype=float),
+        ]
+    )
+    global_min = float(np.min(all_iter_values))
+    global_max = float(np.max(all_iter_values))
+    global_range = global_max - global_min
+
+    # Choose total canvas width so every non-degenerate solver range gets
+    # at least `min_plot_length` characters for its [min,max] span.
+    min_plot_length = 16
+    required_widths = []
+    if global_range > 0:
+        for _, stats in solver_stats:
+            span = stats["max"] - stats["min"]
+            if span > 0:
+                required_widths.append(
+                    int(np.ceil(min_plot_length * global_range / span))
+                )
+
+    total_plot_width = max([40, min_plot_length + 2] + required_widths)
+
     print("=" * 70)
     print("Summary:")
     print(f"  GCRO-DR:")
     print(
-        f"    Average iterations: {np.mean(all_iterations):.1f} ± {np.std(all_iterations):.1f}"
+        f"    Iteration stats: med={fmt_iter(solver_stats[0][1]['med'])}, q25={fmt_iter(solver_stats[0][1]['q25'])}, q75={fmt_iter(solver_stats[0][1]['q75'])}, min={fmt_iter(solver_stats[0][1]['min'])}, max={fmt_iter(solver_stats[0][1]['max'])}"
     )
     print(f"    Min/Max iterations: {min(all_iterations)} / {max(all_iterations)}")
     print(f"    Average restarts: {np.mean(all_restarts):.1f}")
     print(f"    Total iterations: {sum(all_iterations)}")
     print(f"  GCRO-DR (frozen after first solve):")
     print(
-        f"    Average iterations: {np.mean(all_iterations_frozen):.1f} ± {np.std(all_iterations_frozen):.1f}"
+        f"    Iteration stats: med={fmt_iter(solver_stats[1][1]['med'])}, q25={fmt_iter(solver_stats[1][1]['q25'])}, q75={fmt_iter(solver_stats[1][1]['q75'])}, min={fmt_iter(solver_stats[1][1]['min'])}, max={fmt_iter(solver_stats[1][1]['max'])}"
     )
     print(
         f"    Min/Max iterations: {min(all_iterations_frozen)} / {max(all_iterations_frozen)}"
@@ -415,10 +534,24 @@ def main():
     print(f"    Total iterations: {sum(all_iterations_frozen)}")
     print(f"  GMRES({kdim}):")
     print(
-        f"    Average iterations: {np.mean(gmres_iterations):.1f} ± {np.std(gmres_iterations):.1f}"
+        f"    Iteration stats: med={fmt_iter(solver_stats[2][1]['med'])}, q25={fmt_iter(solver_stats[2][1]['q25'])}, q75={fmt_iter(solver_stats[2][1]['q75'])}, min={fmt_iter(solver_stats[2][1]['min'])}, max={fmt_iter(solver_stats[2][1]['max'])}"
     )
     print(f"    Min/Max iterations: {min(gmres_iterations)} / {max(gmres_iterations)}")
     print(f"    Total iterations: {sum(gmres_iterations)}")
+
+    print("  Iteration box plots (common scale across solvers):")
+    print(f"    Global min/max: {fmt_iter(global_min)} / {fmt_iter(global_max)}")
+    label_width = max(len(name) for name, _ in solver_stats)
+    min_label_width = max(len(fmt_iter(stats["min"])) for _, stats in solver_stats) + 2
+    max_label_width = max(len(fmt_iter(stats["max"])) for _, stats in solver_stats) + 2
+    for name, stats in solver_stats:
+        bar = make_boxplot_bar(stats, global_min, global_max, width=total_plot_width)
+        min_text = fmt_iter(stats["min"])
+        max_text = fmt_iter(stats["max"])
+        print(
+            f"    {name:<{label_width}}: {min_text:>{min_label_width}}  {bar}  {max_text:<{max_label_width}}"
+        )
+
     speedup_update = sum(gmres_iterations) / sum(all_iterations)
     speedup_frozen = sum(gmres_iterations) / sum(all_iterations_frozen)
     print(f"  Speedup: {speedup_update:.2f}x (GCRO-DR updating vs GMRES)")
@@ -429,4 +562,5 @@ def main():
 
 
 if __name__ == "__main__":
+    np.random.seed(42)
     main()

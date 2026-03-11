@@ -106,7 +106,6 @@ def test_gcro_large_sparse_nonsym(plot=False):
         ax.set_ylabel("Residual Norm")
         ax.set_title(f"GCRO-DR Convergence ({nx}×{ny}, no preconditioning)")
         ax.grid(True, alpha=0.3)
-        print("Convergence plot saved as 'gcro_dr_convergence.png'")
         plt.show()
 
     return residuals
@@ -200,7 +199,6 @@ def test_with_preconditioning(plot=False):
         ax.set_title(f"Convergence Comparison ({nx}×{ny})")
         ax.grid(True, alpha=0.3)
         ax.legend()
-        print("Convergence plot saved as 'gcro_ilu_comparison.png'")
         plt.show()
     else:
         print("Plotting disabled (use --plot to enable)")

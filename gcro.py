@@ -33,16 +33,8 @@ def invariant_subspace(A, B, k):
         i = 0
         while i < n:
             mag = abs(eigs[i])
-            is_pair = (
-                i + 1 < n
-                and np.isfinite(eigs[i])
-                and np.isfinite(eigs[i + 1])
-                and abs(eigs[i].imag) > tol
-                and abs(eigs[i + 1].imag) > tol
-                and abs(eigs[i].real - eigs[i + 1].real) < tol
-                and abs(eigs[i].imag + eigs[i + 1].imag) < tol
-            )
-            if is_pair:
+
+            if alpha[i].imag != 0:
                 blocks.append((mag, i, 2))  # complex conjugate pair
                 i += 2
             else:
@@ -237,7 +229,6 @@ class gcro:
         if bnrm == 0:
             return x, [0.0], 0, 0
         target_tol = tol * bnrm
-        print(target_tol)
 
         if beta <= target_tol:
             return x, [beta], 0, 0

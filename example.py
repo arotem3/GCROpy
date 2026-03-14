@@ -2,81 +2,102 @@
 """
 Example: GCRO solver for multiple right-hand sides.
 
-Demonstrates solving an advection-diffusion problem with multiple random
+Demonstrates solving a 2D advection-diffusion problem with multiple random
 right-hand sides and plotting the convergence history across all solves.
 """
 
 import numpy as np
-from scipy.sparse import diags
+from scipy.sparse import diags, eye, kron
 from scipy.sparse.linalg import gmres
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from gcro import gcro
 
 
-def create_advection_diffusion_matrix(n, diffusion=0.1, advection=1.0):
+def create_advection_diffusion_matrix_2d(
+    nx, ny, diffusion=0.1, advection_x=1.0, advection_y=1.0
+):
     """
-    Create a 1D advection-diffusion operator:
-    -ε*d²u/dx² + c*du/dx + u = f on [0,1] with Dirichlet BCs.
+    Create a 2D advection-diffusion operator:
+    -ε*(d²u/dx² + d²u/dy²) + cx*du/dx + cy*du/dy + u = f
+    on (0,1)x(0,1) with Dirichlet BCs.
 
     Parameters
     ----------
-    n : int
-        Number of interior grid points
+    nx : int
+        Number of interior grid points in x-direction
+    ny : int
+        Number of interior grid points in y-direction
     diffusion : float
         Diffusion coefficient (ε)
-    advection : float
-        Advection coefficient (c)
+    advection_x : float
+        Advection coefficient in x-direction (cx)
+    advection_y : float
+        Advection coefficient in y-direction (cy)
 
     Returns
     -------
     A_sparse : scipy.sparse matrix
         Discretized operator
     """
-    h = 1.0 / (n + 1)  # Grid spacing
+    hx = 1.0 / (nx + 1)
+    hy = 1.0 / (ny + 1)
 
-    # Finite difference stencil for -ε*d²u/dx² + c*du/dx + u
-    # Main diagonal: -2ε/h² + 1
-    diag_main = -2.0 * diffusion / (h**2) * np.ones(n) + np.ones(n)
-
-    # Upper diagonal: ε/h² - c/(2h)
-    diag_upper = (diffusion / (h**2) - advection / (2.0 * h)) * np.ones(n - 1)
-
-    # Lower diagonal: ε/h² + c/(2h)
-    diag_lower = (diffusion / (h**2) + advection / (2.0 * h)) * np.ones(n - 1)
-
-    # Build sparse tridiagonal matrix
-    A_sparse = diags(
-        [diag_lower, diag_main, diag_upper],
-        offsets=(-1, 0, 1),
-        shape=(n, n),
-        format="csr",
+    # 1D stencil in x for -ε*d²u/dx² + cx*du/dx
+    diag_main_x = -2.0 * diffusion / (hx**2) * np.ones(nx)
+    diag_upper_x = (diffusion / (hx**2) - advection_x / (2.0 * hx)) * np.ones(nx - 1)
+    diag_lower_x = (diffusion / (hx**2) + advection_x / (2.0 * hx)) * np.ones(nx - 1)
+    A_x = (
+        diags(diag_lower_x, -1, shape=(nx, nx), format="csr")
+        + diags(diag_main_x, 0, shape=(nx, nx), format="csr")
+        + diags(diag_upper_x, 1, shape=(nx, nx), format="csr")
     )
+
+    # 1D stencil in y for -ε*d²u/dy² + cy*du/dy
+    diag_main_y = -2.0 * diffusion / (hy**2) * np.ones(ny)
+    diag_upper_y = (diffusion / (hy**2) - advection_y / (2.0 * hy)) * np.ones(ny - 1)
+    diag_lower_y = (diffusion / (hy**2) + advection_y / (2.0 * hy)) * np.ones(ny - 1)
+    A_y = (
+        diags(diag_lower_y, -1, shape=(ny, ny), format="csr")
+        + diags(diag_main_y, 0, shape=(ny, ny), format="csr")
+        + diags(diag_upper_y, 1, shape=(ny, ny), format="csr")
+    )
+
+    # Kronecker-sum structure for 2D operator plus reaction term +u.
+    I_x = eye(nx, format="csr")
+    I_y = eye(ny, format="csr")
+    n_unknowns = nx * ny
+    A_sparse = kron(I_y, A_x, format="csr") + kron(A_y, I_x, format="csr")
+    A_sparse = A_sparse + eye(n_unknowns, format="csr")
 
     return A_sparse
 
 
 def main():
-    """Main example: solve advection-diffusion with multiple random RHS."""
+    """Main example: solve 2D advection-diffusion with multiple random RHS."""
 
     # Problem setup
-    n = 300  # Grid size
-    diffusion = 0.05
-    advection = 2.0
+    nx, ny = 100, 150
+    n_unknowns = nx * ny
+    diffusion = 0.1
+    advection_x = 4.0
+    advection_y = 8.0
     num_rhs = 20  # Number of random right-hand sides
 
     print("=" * 70)
     print("GCRO-DR: Multiple Random Right-Hand Sides Example")
     print("=" * 70)
-    print(f"Problem: 1D Advection-Diffusion")
-    print(f"  Grid points: {n}")
+    print(f"Problem: 2D Advection-Diffusion")
+    print(f"  Grid points: nx={nx}, ny={ny} (total={n_unknowns})")
     print(f"  Diffusion coefficient: {diffusion}")
-    print(f"  Advection coefficient: {advection}")
+    print(f"  Advection coefficients: cx={advection_x}, cy={advection_y}")
     print(f"  Number of RHS: {num_rhs}")
     print()
 
     # Create the matrix
-    A_sparse = create_advection_diffusion_matrix(n, diffusion, advection)
+    A_sparse = create_advection_diffusion_matrix_2d(
+        nx, ny, diffusion, advection_x, advection_y
+    )
 
     def A_matvec(x):
         return A_sparse.dot(x)
@@ -109,8 +130,8 @@ def main():
     # Create solvers once.
     # solver_update: updates deflation space after each solve/restart.
     # solver_frozen: updates on the first solve, then keeps same space for remaining RHS.
-    solver_update = gcro(n=n, A=A_matvec, kdim=kdim, edim=edim)
-    solver_frozen = gcro(n=n, A=A_matvec, kdim=kdim, edim=edim)
+    solver_update = gcro(n=n_unknowns, A=A_matvec, kdim=kdim, edim=edim)
+    solver_frozen = gcro(n=n_unknowns, A=A_matvec, kdim=kdim, edim=edim)
 
     # Solve each right-hand side
     np.random.seed(42)
@@ -118,7 +139,7 @@ def main():
         print(f"Solve {i+1}/{num_rhs}:")
 
         # Generate random right-hand side
-        b = np.random.randn(n)
+        b = np.random.randn(n_unknowns)
         b_norm = np.linalg.norm(b)
 
         # Solve with GCRO-DR (continual deflation updates)
